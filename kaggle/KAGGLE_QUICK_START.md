@@ -19,11 +19,14 @@ Kaggle notebook'unuzda **tek bir cell**'de şunu çalıştırın:
 **İşte bu kadar!** Script otomatik olarak:
 - ✅ Projeyi GitHub'dan klonlar
 - ✅ Gerekli paketleri yükler
+- ✅ NumPy 2.x uyumluluk sorununu çözer (otomatik downgrade)
 - ✅ Test verilerini ve sample_submission.csv'yi bulur
 - ✅ Modeli yükler (veya dummy model oluşturur)
 - ✅ TÜM test görsellerini işler
 - ✅ Submission dosyası oluşturur
 - ✅ Görselleştirme yapar
+
+**Not:** Script, matplotlib uyumluluğu için NumPy'ı otomatik olarak 1.x versiyonuna downgrade eder.
 
 ---
 
@@ -49,6 +52,7 @@ Yeni notebook oluşturduktan sonra:
 
 ```python
 !pip install -q segmentation-models-pytorch timm albumentations
+!pip install 'numpy<2.0' --force-reinstall -q  # matplotlib uyumluluğu için
 ```
 
 ### 4. Inference Scriptini Çalıştır
@@ -128,6 +132,13 @@ python scripts/train.py --data_dir data/raw --epochs 100
 ---
 
 ## 🆘 Sorun Giderme
+
+### "AttributeError: _ARRAY_API not found" veya NumPy hatası
+Script artık bunu otomatik çözüyor. Manuel çözüm:
+```python
+!pip install 'numpy<2.0' --force-reinstall -q
+# Kernel'i restart edin
+```
 
 ### "Module not found" hatası
 ```python

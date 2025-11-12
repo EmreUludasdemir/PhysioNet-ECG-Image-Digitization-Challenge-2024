@@ -82,6 +82,17 @@ for i, package in enumerate(packages, 1):
 log("✅ Kurulum tamamlandı!", "SUCCESS")
 print()
 
+# NumPy 2.x uyumluluk sorunu için downgrade
+log("NumPy versiyonu kontrol ediliyor...")
+heartbeat("NumPy 1.x'e downgrade yapılıyor (matplotlib uyumluluğu için)...")
+subprocess.run(
+    ['pip', 'install', 'numpy<2.0', '--force-reinstall', '-q'],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL
+)
+log("✓ NumPy downgrade tamamlandı")
+print()
+
 
 # ============================================================================
 # STEP 2: Import'lar ve Konfigürasyon
