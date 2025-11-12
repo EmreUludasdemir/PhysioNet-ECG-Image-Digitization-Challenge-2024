@@ -8,7 +8,7 @@ by extracting signal coordinates and scaling them appropriately.
 import numpy as np
 from scipy.signal import savgol_filter
 from scipy.interpolate import interp1d
-from typing import Tuple, List, Optional, Dict
+from typing import Tuple, List, Optional, Dict, Union
 
 from .config import get_config
 
