@@ -139,54 +139,123 @@ print()
 
 
 # ============================================================================
-# STEP 3: Test Verisi Kontrolü
+# STEP 3: Test Verisi ve Sample Submission Kontrolü
 # ============================================================================
-log("STEP 3: Test verisi kontrol", "START")
+log("STEP 3: Test verisi ve sample_submission.csv kontrol", "START")
 print("-" * 80)
 
-# Olası test veri lokasyonları
-possible_paths = [
-    '/kaggle/input/physionet-ecg-digitization-challenge-2024/test_images',
-    '/kaggle/input/physionet-challenge-2024/test',
-    '/kaggle/input/ecg-test-images',
-    '/kaggle/input/test-images',
+# Olası input lokasyonları (yarışmanın farklı isimleri için)
+possible_input_dirs = [
+    '/kaggle/input/physionet-ecg-image-digitization',
+    '/kaggle/input/physionet-ecg-digitization-challenge-2024',
+    '/kaggle/input/physionet-challenge-2024',
+    '/kaggle/input',
 ]
 
+# Sample submission dosyasını bul
+sample_submission_path = None
 test_data_path = None
-for path in possible_paths:
-    heartbeat(f"Kontrol ediliyor: {path}")
-    if os.path.exists(path):
-        test_data_path = path
-        log(f"✓ Test verisi bulundu: {path}")
-        break
+competition_input_dir = None
 
-if test_data_path is None:
-    log("⚠️ Test verisi bulunamadı! Demo modunda devam ediliyor...", "WARNING")
-    USE_DUMMY_DATA = True
-    test_images = []
+for input_dir in possible_input_dirs:
+    heartbeat(f"Kontrol ediliyor: {input_dir}")
+    if os.path.exists(input_dir):
+        # sample_submission.csv ara
+        possible_submission_files = [
+            os.path.join(input_dir, 'sample_submission.csv'),
+            os.path.join(input_dir, 'sampleSubmission.csv'),
+            os.path.join(input_dir, 'SampleSubmission.csv'),
+        ]
+
+        for sub_file in possible_submission_files:
+            if os.path.exists(sub_file):
+                sample_submission_path = sub_file
+                competition_input_dir = input_dir
+                log(f"✓ sample_submission.csv bulundu: {sub_file}")
+                break
+
+        # test_images dizini ara
+        possible_test_dirs = [
+            os.path.join(input_dir, 'test_images'),
+            os.path.join(input_dir, 'test'),
+            os.path.join(input_dir, 'images'),
+        ]
+
+        for test_dir in possible_test_dirs:
+            if os.path.exists(test_dir):
+                test_data_path = test_dir
+                log(f"✓ Test görselleri dizini bulundu: {test_dir}")
+                break
+
+        if sample_submission_path and test_data_path:
+            break
+
+# sample_submission.csv'yi oku ve gerçek record_id'leri al
+record_ids = []
+if sample_submission_path:
+    heartbeat("sample_submission.csv okunuyor...")
+    import pandas as pd
+    sample_df = pd.read_csv(sample_submission_path)
+
+    # record_id'leri çıkar (unique)
+    if 'record_id' in sample_df.columns:
+        record_ids = sorted(sample_df['record_id'].unique().tolist())
+        log(f"✓ {len(record_ids)} adet record_id bulundu")
+        log(f"   İlk 5 record: {record_ids[:5]}")
+    else:
+        log("❌ sample_submission.csv'de 'record_id' kolonu bulunamadı!", "ERROR")
+        raise ValueError("sample_submission.csv formatı hatalı")
 else:
-    # Test görsellerini bul
-    heartbeat("Test görselleri taranıyor...")
-    test_images = (
+    log("❌ sample_submission.csv bulunamadı!", "ERROR")
+    log("Lütfen Kaggle yarışmasının input datasını notebook'a ekleyin:", "ERROR")
+    log("  1. Notebook ayarlarından 'Add Data' seçin", "ERROR")
+    log("  2. PhysioNet ECG yarışmasının datasını ekleyin", "ERROR")
+    raise FileNotFoundError("sample_submission.csv bulunamadı")
+
+# Test görsellerini record_id'lere göre eşleştir
+if test_data_path:
+    heartbeat("Test görselleri eşleştiriliyor...")
+    test_images_dict = {}
+
+    # Tüm görselleri tara
+    all_images = (
         list(Path(test_data_path).glob('*.png')) +
         list(Path(test_data_path).glob('*.jpg')) +
         list(Path(test_data_path).glob('*.jpeg')) +
         list(Path(test_data_path).glob('*.PNG')) +
         list(Path(test_data_path).glob('*.JPG'))
     )
-    log(f"✓ {len(test_images)} test görseli bulundu")
+
+    # record_id'lere göre eşleştir
+    for img_path in all_images:
+        record_id = img_path.stem  # dosya adından uzantıyı çıkar
+        if record_id in record_ids:
+            test_images_dict[record_id] = img_path
+
+    log(f"✓ {len(test_images_dict)}/{len(record_ids)} görsel eşleştirildi")
+
+    if len(test_images_dict) == 0:
+        log("❌ Hiçbir test görseli bulunamadı!", "ERROR")
+        raise FileNotFoundError("Test görselleri bulunamadı")
+
     USE_DUMMY_DATA = False
+else:
+    log("❌ Test görselleri dizini bulunamadı!", "ERROR")
+    raise FileNotFoundError("Test görselleri dizini bulunamadı")
 
 # İlk görseli görselleştir
-if len(test_images) > 0:
+if len(test_images_dict) > 0:
     heartbeat("Örnek görsel yükleniyor...")
-    sample_img = cv2.imread(str(test_images[0]))
+    first_record_id = list(test_images_dict.keys())[0]
+    first_image_path = test_images_dict[first_record_id]
+
+    sample_img = cv2.imread(str(first_image_path))
     sample_img = cv2.cvtColor(sample_img, cv2.COLOR_BGR2RGB)
 
     heartbeat("Görsel kaydediliyor...")
     plt.figure(figsize=(15, 10))
     plt.imshow(sample_img)
-    plt.title(f"Örnek ECG Görüntüsü: {test_images[0].name}", fontsize=14, fontweight='bold')
+    plt.title(f"Örnek ECG Görüntüsü: {first_image_path.name} (Record: {first_record_id})", fontsize=14, fontweight='bold')
     plt.axis('off')
     plt.tight_layout()
     plt.savefig('/kaggle/working/sample_ecg_image.png', dpi=150, bbox_inches='tight')
@@ -298,40 +367,42 @@ print()
 log("STEP 5: Test prediction", "START")
 print("-" * 80)
 
-if len(test_images) > 0:
-    heartbeat("İlk görsel üzerinde test prediction yapılıyor...")
+heartbeat("İlk görsel üzerinde test prediction yapılıyor...")
 
-    try:
-        test_signal = predict_image(test_images[0])
-        log(f"✓ Prediction tamamlandı")
-        log(f"  Shape: {test_signal.shape}")
-        log(f"  Range: [{test_signal.min():.3f}, {test_signal.max():.3f}] mV")
-        log(f"  Mean: {test_signal.mean():.3f} mV")
+try:
+    first_record_id = list(test_images_dict.keys())[0]
+    first_image_path = test_images_dict[first_record_id]
 
-        # Görselleştir
-        heartbeat("Sinyal görselleştiriliyor...")
-        fig, axes = plt.subplots(4, 3, figsize=(20, 15))
-        axes = axes.flatten()
+    test_signal = predict_image(first_image_path)
+    log(f"✓ Prediction tamamlandı (Record: {first_record_id})")
+    log(f"  Shape: {test_signal.shape}")
+    log(f"  Range: [{test_signal.min():.3f}, {test_signal.max():.3f}] mV")
+    log(f"  Mean: {test_signal.mean():.3f} mV")
 
-        lead_names = config.data.lead_names
-        time = np.arange(1000) / 500
+    # Görselleştir
+    heartbeat("Sinyal görselleştiriliyor...")
+    fig, axes = plt.subplots(4, 3, figsize=(20, 15))
+    axes = axes.flatten()
 
-        for i, lead_name in enumerate(lead_names):
-            ax = axes[i]
-            ax.plot(time, test_signal[i, :1000], 'b-', linewidth=0.8)
-            ax.set_title(f'Lead {lead_name}', fontsize=12, fontweight='bold')
-            ax.set_xlabel('Time (s)')
-            ax.set_ylabel('Amplitude (mV)')
-            ax.grid(True, alpha=0.3)
+    lead_names = config.data.lead_names
+    time = np.arange(1000) / 500
 
-        plt.suptitle('Test Prediction - İlk 2 saniye', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig('/kaggle/working/test_prediction.png', dpi=150, bbox_inches='tight')
-        plt.close()
-        log("✓ Görsel kaydedildi: test_prediction.png")
+    for i, lead_name in enumerate(lead_names):
+        ax = axes[i]
+        ax.plot(time, test_signal[i, :1000], 'b-', linewidth=0.8)
+        ax.set_title(f'Lead {lead_name}', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Amplitude (mV)')
+        ax.grid(True, alpha=0.3)
 
-    except Exception as e:
-        log(f"❌ Test prediction hatası: {e}", "ERROR")
+    plt.suptitle(f'Test Prediction - {first_record_id} (İlk 2 saniye)', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/kaggle/working/test_prediction.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    log("✓ Görsel kaydedildi: test_prediction.png")
+
+except Exception as e:
+    log(f"❌ Test prediction hatası: {e}", "ERROR")
 
 print()
 
@@ -344,75 +415,79 @@ print("-" * 80)
 
 predictions = {}
 
-if len(test_images) > 0:
-    log(f"Toplam {len(test_images)} görsel işlenecek")
+log(f"Toplam {len(record_ids)} record işlenecek")
+log(f"  • Görseli bulunan: {len(test_images_dict)}")
+log(f"  • Görseli bulunamayan: {len(record_ids) - len(test_images_dict)}")
 
-    # Batch boyutu (her N görselde bir checkpoint)
-    CHECKPOINT_INTERVAL = 10
-    HEARTBEAT_INTERVAL = 5
+# Batch boyutu (her N görselde bir checkpoint)
+CHECKPOINT_INTERVAL = 10
+HEARTBEAT_INTERVAL = 5
 
-    success_count = 0
-    error_count = 0
+success_count = 0
+error_count = 0
+missing_count = 0
 
-    # Progress bar ile işle
-    pbar = tqdm(test_images, desc="Processing images", unit="img")
+# Progress bar ile işle - TÜM record_id'ler için
+pbar = tqdm(record_ids, desc="Processing records", unit="record")
 
-    for idx, image_path in enumerate(pbar, 1):
-        try:
-            # Heartbeat her N görselde
-            if idx % HEARTBEAT_INTERVAL == 0:
-                heartbeat(f"İşlenen: {idx}/{len(test_images)} ({success_count} başarılı, {error_count} hatalı)")
+for idx, record_id in enumerate(pbar, 1):
+    try:
+        # Heartbeat her N kayıtta
+        if idx % HEARTBEAT_INTERVAL == 0:
+            heartbeat(f"İşlenen: {idx}/{len(record_ids)} ({success_count} başarılı, {missing_count} eksik, {error_count} hatalı)")
 
+        # Eğer görsel varsa, gerçek prediction yap
+        if record_id in test_images_dict:
+            image_path = test_images_dict[record_id]
             signals = predict_image(image_path)
-            record_id = image_path.stem
             predictions[record_id] = signals
             success_count += 1
+        else:
+            # Görsel yoksa, sıfır değerli signal oluştur (uyarı ver)
+            if missing_count == 0:
+                log(f"⚠️ Görseli bulunamayan kayıtlar için sıfır değerli signal oluşturuluyor", "WARNING")
+            signals = np.zeros((12, 5000))
+            predictions[record_id] = signals
+            missing_count += 1
 
-            # Progress bar güncelle
-            pbar.set_postfix({'success': success_count, 'errors': error_count})
+        # Progress bar güncelle
+        pbar.set_postfix({'success': success_count, 'missing': missing_count, 'errors': error_count})
 
-            # Checkpoint kaydet
-            if idx % CHECKPOINT_INTERVAL == 0:
-                log(f"💾 Checkpoint: {idx}/{len(test_images)} işlendi")
-                # İsteğe bağlı: ara sonuçları kaydet
-                checkpoint_file = f'/kaggle/working/checkpoint_{idx}.txt'
-                with open(checkpoint_file, 'w') as f:
-                    f.write(f"Processed: {idx}\nSuccess: {success_count}\nErrors: {error_count}")
+        # Checkpoint kaydet
+        if idx % CHECKPOINT_INTERVAL == 0:
+            log(f"💾 Checkpoint: {idx}/{len(record_ids)} işlendi")
+            # İsteğe bağlı: ara sonuçları kaydet
+            checkpoint_file = f'/kaggle/working/checkpoint_{idx}.txt'
+            with open(checkpoint_file, 'w') as f:
+                f.write(f"Processed: {idx}\nSuccess: {success_count}\nMissing: {missing_count}\nErrors: {error_count}")
 
-        except Exception as e:
-            error_count += 1
-            if error_count <= 5:
-                log(f"❌ Hata ({image_path.name}): {e}", "ERROR")
-            pbar.set_postfix({'success': success_count, 'errors': error_count})
+    except Exception as e:
+        error_count += 1
+        if error_count <= 5:
+            log(f"❌ Hata (record: {record_id}): {e}", "ERROR")
+        # Hata durumunda da sıfır değerli signal ekle
+        predictions[record_id] = np.zeros((12, 5000))
+        pbar.set_postfix({'success': success_count, 'missing': missing_count, 'errors': error_count})
 
-    pbar.close()
+pbar.close()
 
-    log(f"✅ Batch processing tamamlandı!", "SUCCESS")
-    log(f"   Başarılı: {success_count}/{len(test_images)}")
-    if error_count > 0:
-        log(f"   Hatalı: {error_count}/{len(test_images)}", "WARNING")
+log(f"✅ Batch processing tamamlandı!", "SUCCESS")
+log(f"   Başarılı: {success_count}/{len(record_ids)}")
+if missing_count > 0:
+    log(f"   Görseli yok: {missing_count}/{len(record_ids)}", "WARNING")
+if error_count > 0:
+    log(f"   Hatalı: {error_count}/{len(record_ids)}", "WARNING")
 
-    # İstatistikler
-    if len(predictions) > 0:
-        heartbeat("İstatistikler hesaplanıyor...")
-        all_signals = np.stack(list(predictions.values()))
-        log(f"\n📊 Prediction İstatistikleri:")
-        log(f"   Shape: {all_signals.shape}")
-        log(f"   Min: {all_signals.min():.3f} mV")
-        log(f"   Max: {all_signals.max():.3f} mV")
-        log(f"   Mean: {all_signals.mean():.3f} mV")
-        log(f"   Std: {all_signals.std():.3f} mV")
-
-else:
-    log("⚠️ Test görseli yok, dummy prediction oluşturuluyor...", "WARNING")
-    # Demo için 5 dummy prediction
-    for i in range(5):
-        heartbeat(f"Dummy {i+1}/5 oluşturuluyor...")
-        record_id = f"dummy_record_{i:03d}"
-        dummy_signal = np.random.randn(12, 5000) * 0.5
-        predictions[record_id] = dummy_signal
-
-    log(f"✓ {len(predictions)} dummy prediction oluşturuldu")
+# İstatistikler
+if len(predictions) > 0:
+    heartbeat("İstatistikler hesaplanıyor...")
+    all_signals = np.stack(list(predictions.values()))
+    log(f"\n📊 Prediction İstatistikleri:")
+    log(f"   Shape: {all_signals.shape}")
+    log(f"   Min: {all_signals.min():.3f} mV")
+    log(f"   Max: {all_signals.max():.3f} mV")
+    log(f"   Mean: {all_signals.mean():.3f} mV")
+    log(f"   Std: {all_signals.std():.3f} mV")
 
 print()
 
@@ -597,7 +672,12 @@ log("🎉 PIPELINE TAMAMLANDI!", "SUCCESS")
 log("=" * 80)
 
 log(f"\n📊 ÖZET:")
-log(f"   • İşlenen görsel sayısı: {len(predictions)}")
+log(f"   • Toplam record sayısı: {len(record_ids)}")
+log(f"   • Gerçek görsellerden tahmin: {success_count}")
+if missing_count > 0:
+    log(f"   • ⚠️ Görseli olmayan (sıfır değer): {missing_count}")
+if error_count > 0:
+    log(f"   • ⚠️ Hatalı (sıfır değer): {error_count}")
 log(f"   • Submission satır sayısı: {len(submission_df):,}")
 log(f"   • Model tipi: {'GERÇEK MODEL' if USE_REAL_MODEL else 'DUMMY MODEL (Test)'}")
 log(f"   • Submission dosyası: {submission_path}")
@@ -622,12 +702,19 @@ if not USE_REAL_MODEL:
     log("      - Model eğitin: scripts/train.py")
     log("      - Eğitilmiş modeli Kaggle'a dataset olarak yükleyin")
     log("      - Bu scripti tekrar çalıştırın")
+    log("")
 
-log("   2. submission.csv dosyasını indirin")
-log("   3. Kaggle Competition sayfasına gidin")
-log("   4. 'Submit Predictions' butonuna tıklayın")
-log("   5. submission.csv dosyasını yükleyin")
-log("   6. Sonuçları bekleyin!")
+if missing_count > 0:
+    log("   ⚠️ UYARI: Bazı kayıtların görselleri bulunamadı!")
+    log("      - Bu kayıtlar için sıfır değerli signal kullanıldı")
+    log("      - Gerçek yarışmada tüm görsellerin olduğundan emin olun")
+    log("")
+
+log("   • submission.csv dosyasını indirin")
+log("   • Kaggle Competition sayfasına gidin")
+log("   • 'Submit Predictions' butonuna tıklayın")
+log("   • submission.csv dosyasını yükleyin")
+log("   • Sonuçları bekleyin!")
 
 log("\n" + "=" * 80)
 log("✅ Script başarıyla tamamlandı!", "SUCCESS")

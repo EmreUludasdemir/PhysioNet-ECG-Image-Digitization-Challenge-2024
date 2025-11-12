@@ -1,5 +1,12 @@
 # 🚀 Kaggle Hızlı Başlangıç Kılavuzu
 
+## ⚠️ ÖNEMLİ: Yarışma Verileri Gerekli
+
+Script çalışması için **PhysioNet ECG yarışmasının input datasını notebook'a eklemelisiniz**:
+1. Kaggle notebook'unuzda **"Add Data"** butonuna tıklayın
+2. PhysioNet ECG Image Digitization Competition'ı arayın ve ekleyin
+3. Gerekli dosyalar: `test_images/` dizini ve `sample_submission.csv`
+
 ## ⚡ EN HIZLI YOL - Tek Komutla Başlat
 
 Kaggle notebook'unuzda **tek bir cell**'de şunu çalıştırın:
@@ -12,8 +19,9 @@ Kaggle notebook'unuzda **tek bir cell**'de şunu çalıştırın:
 **İşte bu kadar!** Script otomatik olarak:
 - ✅ Projeyi GitHub'dan klonlar
 - ✅ Gerekli paketleri yükler
+- ✅ Test verilerini ve sample_submission.csv'yi bulur
 - ✅ Modeli yükler (veya dummy model oluşturur)
-- ✅ Test görsellerini işler
+- ✅ TÜM test görsellerini işler
 - ✅ Submission dosyası oluşturur
 - ✅ Görselleştirme yapar
 
@@ -60,18 +68,21 @@ FileLink('/kaggle/working/submission.csv')
 
 ## 📦 Gerekli Kaggle Datasets
 
-Gerçek sonuçlar için şu dataset'leri ekleyin:
-
-### 1. Test Images
+### 1. Test Images (ZORUNLU)
+Script çalışması için mutlaka gerekli:
 ```
-Add Data > Search: "physionet ecg images"
+Add Data > Competition > PhysioNet ECG Image Digitization
 ```
+Bu dataset şunları içermelidir:
+- `test_images/` dizini (tüm test görselleri)
+- `sample_submission.csv` (record_id listesi)
 
 ### 2. Eğitilmiş Model (opsiyonel)
 Eğer modelinizi eğittiyseniz:
 ```
 Add Data > Upload > your_model.pth
 ```
+Model yoksa script dummy model ile çalışır (rastgele tahminler)
 
 ---
 
@@ -91,11 +102,18 @@ Script çalıştığında şu dosyalar oluşturulur:
 
 ## ⚠️ Önemli Notlar
 
+### Test Verileri (ZORUNLU)
+Script artık **gerçek test verileri** ile çalışır:
+- ✅ sample_submission.csv'den record_id'leri okur
+- ✅ Her record_id için tahmin yapar
+- ⚠️ Görseli olmayan kayıtlar için sıfır değerli signal kullanır
+
 ### Dummy Model Modu
 Eğer eğitilmiş model yoksa script **DUMMY MODE**'da çalışır:
 - ✅ Pipeline test edilebilir
 - ✅ Submission formatı doğrulanır
-- ❌ Sonuçlar rastgele (gerçek değil)
+- ✅ Gerçek record_id'ler kullanılır
+- ❌ Sonuçlar rastgele (gerçek tahmin değil)
 
 **Gerçek sonuçlar için:** Önce modeli eğitin!
 
@@ -122,9 +140,14 @@ python scripts/train.py --data_dir data/raw --epochs 100
 # veya CPU modunda çalıştırın
 ```
 
-### "No test images found" uyarısı
-- Test dataset'i Kaggle'a ekleyin
-- Veya demo modu için devam edin (dummy data kullanır)
+### "sample_submission.csv bulunamadı" hatası
+- Yarışmanın input datasını notebook'a ekleyin
+- Add Data > Competition > PhysioNet ECG Image Digitization
+- sample_submission.csv dosyası input dizininde olmalı
+
+### "Test görselleri bulunamadı" hatası
+- test_images/ dizininin input'ta olduğundan emin olun
+- Dizin yapısı: `/kaggle/input/[competition-name]/test_images/*.png`
 
 ---
 
