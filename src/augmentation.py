@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 from .config import get_config
 

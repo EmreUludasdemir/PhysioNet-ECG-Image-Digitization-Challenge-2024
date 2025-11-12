@@ -7,7 +7,7 @@ to ensure accurate signal extraction.
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Union
 from pathlib import Path
 
 from .config import get_config

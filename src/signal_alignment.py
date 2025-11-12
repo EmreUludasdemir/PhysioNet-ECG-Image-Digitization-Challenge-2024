@@ -8,7 +8,7 @@ the match between predicted and ground truth signals.
 import numpy as np
 from scipy.signal import correlate
 from scipy.optimize import minimize
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Union
 
 from .config import get_config
 
