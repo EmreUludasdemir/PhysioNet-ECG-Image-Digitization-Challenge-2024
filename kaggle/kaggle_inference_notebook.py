@@ -13,8 +13,11 @@ import os
 import sys
 from pathlib import Path
 import subprocess
-import time
+import time as time_module
 from datetime import datetime
+
+# Başlangıç zamanı
+START_TIME = time_module.time()
 
 def log(message, level="INFO"):
     """Zaman damgalı log mesajı (timeout'u engellemek için)"""
@@ -628,5 +631,5 @@ log("   6. Sonuçları bekleyin!")
 
 log("\n" + "=" * 80)
 log("✅ Script başarıyla tamamlandı!", "SUCCESS")
-log(f"⏱️ Toplam süre: {time.time() - time.time():.2f} saniye")
+log(f"⏱️ Toplam süre: {time_module.time() - START_TIME:.2f} saniye")
 log("=" * 80)
