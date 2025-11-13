@@ -118,6 +118,12 @@ Script artık **gerçek test verileri** ile çalışır:
 - ✅ Parquet: `sample_submission.parquet`
 - ✅ Otomatik format tespiti
 
+### Submission Format
+Script otomatik olarak yarışmanın formatını kullanır:
+- Input: `id` kolonu (format: `{record_id}_{time}_{lead}`)
+- Output: `id` ve `value` kolonları
+- Örnek: `1053922973_0_I` → record_id `1053922973`, time `0`, lead `I`
+
 ### Dummy Model Modu
 Eğer eğitilmiş model yoksa script **DUMMY MODE**'da çalışır:
 - ✅ Pipeline test edilebilir
