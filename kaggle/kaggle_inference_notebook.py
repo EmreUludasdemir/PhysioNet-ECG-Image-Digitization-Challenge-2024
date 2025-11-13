@@ -242,11 +242,22 @@ if sample_submission_path:
 
         # record_id'leri çıkar (unique)
         if 'record_id' in sample_df.columns:
+            # Standart format: record_id kolonu var
             record_ids = sorted(sample_df['record_id'].unique().tolist())
             log(f"✓ {len(record_ids)} adet record_id bulundu")
             log(f"   İlk 5 record: {record_ids[:5]}")
+        elif 'id' in sample_df.columns:
+            # Alternatif format: id kolonu var (örn: "record_id_time_lead")
+            # id'den record_id'yi parse et (ilk underscore'a kadar)
+            heartbeat("id kolonundan record_id'ler parse ediliyor...")
+            sample_df['parsed_record_id'] = sample_df['id'].str.split('_').str[0]
+            record_ids = sorted(sample_df['parsed_record_id'].unique().tolist())
+            log(f"✓ {len(record_ids)} adet record_id parse edildi")
+            log(f"   İlk 5 record: {record_ids[:5]}")
+            log(f"   Örnek id format: {sample_df['id'].iloc[0]}")
         else:
-            log("❌ 'record_id' kolonu bulunamadı!", "ERROR")
+            log("❌ 'record_id' veya 'id' kolonu bulunamadı!", "ERROR")
+            log(f"   Mevcut kolonlar: {sample_df.columns.tolist()}", "ERROR")
             raise ValueError("Submission dosyası formatı hatalı")
 
     except Exception as e:
@@ -552,8 +563,10 @@ heartbeat("Submission formatı hazırlanıyor...")
 rows = []
 
 # Progress bar ile submission oluştur
+# Format: id = "{record_id}_{time_idx}_{lead_name}", value = signal_value
 total_rows = len(predictions) * len(lead_names) * 5000
 log(f"Toplam {total_rows:,} satır oluşturulacak")
+log(f"Format: id = {{record_id}}_{{time}}_{{lead}}, value = signal_value")
 
 row_count = 0
 for record_id, signals in predictions.items():
@@ -561,10 +574,10 @@ for record_id, signals in predictions.items():
 
     for lead_idx, lead_name in enumerate(lead_names):
         for time_idx in range(signals.shape[1]):
+            # ID formatı: {record_id}_{time_idx}_{lead_name}
+            row_id = f"{record_id}_{time_idx}_{lead_name}"
             rows.append({
-                'record_id': record_id,
-                'lead': lead_name,
-                'time': time_idx,
+                'id': row_id,
                 'value': float(signals[lead_idx, time_idx])
             })
 
@@ -606,6 +619,13 @@ heartbeat("Submission dosyası kontrol ediliyor...")
 log(f"✓ Toplam satır: {len(submission_df):,}")
 log(f"✓ Kolonlar: {list(submission_df.columns)}")
 
+# Kolon kontrolü
+expected_columns = ['id', 'value']
+if list(submission_df.columns) == expected_columns:
+    log(f"✓ Kolonlar doğru: {expected_columns}")
+else:
+    log(f"⚠️ Kolon uyuşmazlığı! Beklenen: {expected_columns}, Mevcut: {list(submission_df.columns)}", "WARNING")
+
 # Eksik değer kontrolü
 missing = submission_df.isnull().sum().sum()
 if missing > 0:
@@ -613,17 +633,16 @@ if missing > 0:
 else:
     log(f"✓ Eksik değer yok")
 
-# Record sayısı
-unique_records = submission_df['record_id'].nunique()
-log(f"✓ Unique record sayısı: {unique_records}")
-
-# Lead kontrolü
-unique_leads = submission_df['lead'].nunique()
-expected_leads = len(lead_names)
-if unique_leads == expected_leads:
-    log(f"✓ Lead sayısı doğru: {unique_leads}/{expected_leads}")
+# ID formatı kontrolü (örnek kontrol)
+sample_id = submission_df['id'].iloc[0]
+if '_' in sample_id:
+    log(f"✓ ID formatı doğru (örnek: {sample_id})")
 else:
-    log(f"⚠️ Lead sayısı hatalı: {unique_leads}/{expected_leads}", "WARNING")
+    log(f"⚠️ ID formatı hatalı (örnek: {sample_id})", "WARNING")
+
+# Record sayısı (id'lerden parse et)
+unique_records = submission_df['id'].str.split('_').str[0].nunique()
+log(f"✓ Unique record sayısı: {unique_records}")
 
 # Değer aralığı kontrolü
 val_min = submission_df['value'].min()
@@ -637,14 +656,15 @@ file_size_mb = os.path.getsize(submission_path) / (1024 * 1024)
 log(f"✓ Dosya boyutu: {file_size_mb:.2f} MB")
 
 # NaN/Inf kontrolü
-if np.isinf(submission_df['value']).any():
+has_inf = np.isinf(submission_df['value']).any()
+if has_inf:
     log("⚠️ Infinity değerleri tespit edildi!", "WARNING")
 else:
     log("✓ Infinity değeri yok")
 
 print("\n" + "=" * 80)
 
-if missing == 0 and unique_leads == expected_leads and not np.isinf(submission_df['value']).any():
+if missing == 0 and list(submission_df.columns) == expected_columns and not has_inf:
     log("✅✅✅ SUBMISSION HAZIR! SUBMIT EDEBİLİRSİNİZ! ✅✅✅", "SUCCESS")
 else:
     log("⚠️ Submission'da bazı sorunlar var, lütfen kontrol edin", "WARNING")
