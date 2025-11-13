@@ -39,19 +39,32 @@ print()
 log("STEP 1: Projeyi GitHub'dan klonlama ve kurulum", "START")
 print("-" * 80)
 
-# GitHub'dan klonla
-if not os.path.exists('/kaggle/working/PhysioNet-ECG-Image-Digitization-Challenge-2024'):
-    log("Klonlanıyor...")
-    subprocess.run([
-        'git', 'clone',
-        'https://github.com/EmreUludasdemir/PhysioNet-ECG-Image-Digitization-Challenge-2024.git'
-    ], cwd='/kaggle/working')
-    log("✓ Klonlama tamamlandı")
-else:
-    log("✓ Proje zaten mevcut")
+# Eski/bozuk dizinleri temizle (cache problemi için)
+project_dir = '/kaggle/working/PhysioNet-ECG-Image-Digitization-Challenge-2024'
+if os.path.exists(project_dir):
+    log("Eski proje dizini tespit edildi, temizleniyor...")
+    import shutil
+    try:
+        shutil.rmtree(project_dir)
+        log("✓ Eski dizin temizlendi")
+    except Exception as e:
+        log(f"⚠️ Temizleme uyarısı: {e}", "WARNING")
+
+# GitHub'dan fresh clone
+log("GitHub'dan klonlanıyor...")
+result = subprocess.run([
+    'git', 'clone',
+    'https://github.com/EmreUludasdemir/PhysioNet-ECG-Image-Digitization-Challenge-2024.git'
+], cwd='/kaggle/working', capture_output=True, text=True)
+
+if result.returncode != 0:
+    log(f"❌ Clone hatası: {result.stderr}", "ERROR")
+    sys.exit(1)
+
+log("✓ Klonlama tamamlandı")
 
 # Proje dizinine geç
-os.chdir('/kaggle/working/PhysioNet-ECG-Image-Digitization-Challenge-2024')
+os.chdir(project_dir)
 log(f"✓ Çalışma dizini: {os.getcwd()}")
 
 # Branch'i checkout et
