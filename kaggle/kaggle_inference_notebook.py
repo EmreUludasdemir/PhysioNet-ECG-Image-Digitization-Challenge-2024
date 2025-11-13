@@ -184,10 +184,12 @@ competition_input_dir = None
 for input_dir in possible_input_dirs:
     heartbeat(f"Kontrol ediliyor: {input_dir}")
     if os.path.exists(input_dir):
-        # sample_submission.csv ara
+        # sample_submission dosyasını ara (csv veya parquet)
         possible_submission_files = [
             os.path.join(input_dir, 'sample_submission.csv'),
+            os.path.join(input_dir, 'sample_submission.parquet'),
             os.path.join(input_dir, 'sampleSubmission.csv'),
+            os.path.join(input_dir, 'sampleSubmission.parquet'),
             os.path.join(input_dir, 'SampleSubmission.csv'),
         ]
 
@@ -195,7 +197,7 @@ for input_dir in possible_input_dirs:
             if os.path.exists(sub_file):
                 sample_submission_path = sub_file
                 competition_input_dir = input_dir
-                log(f"✓ sample_submission.csv bulundu: {sub_file}")
+                log(f"✓ Submission dosyası bulundu: {sub_file}")
                 break
 
         # test_images dizini ara
@@ -211,30 +213,52 @@ for input_dir in possible_input_dirs:
                 log(f"✓ Test görselleri dizini bulundu: {test_dir}")
                 break
 
+        # test.csv dosyasını da kontrol et (fallback için)
+        test_csv_path = os.path.join(input_dir, 'test.csv')
+        if os.path.exists(test_csv_path):
+            if not sample_submission_path:
+                sample_submission_path = test_csv_path
+                competition_input_dir = input_dir
+                log(f"✓ test.csv bulundu (fallback olarak kullanılacak): {test_csv_path}")
+
         if sample_submission_path and test_data_path:
             break
 
-# sample_submission.csv'yi oku ve gerçek record_id'leri al
+# sample_submission dosyasını oku ve gerçek record_id'leri al
 record_ids = []
 if sample_submission_path:
-    heartbeat("sample_submission.csv okunuyor...")
+    heartbeat("Submission dosyası okunuyor...")
     import pandas as pd
-    sample_df = pd.read_csv(sample_submission_path)
 
-    # record_id'leri çıkar (unique)
-    if 'record_id' in sample_df.columns:
-        record_ids = sorted(sample_df['record_id'].unique().tolist())
-        log(f"✓ {len(record_ids)} adet record_id bulundu")
-        log(f"   İlk 5 record: {record_ids[:5]}")
-    else:
-        log("❌ sample_submission.csv'de 'record_id' kolonu bulunamadı!", "ERROR")
-        raise ValueError("sample_submission.csv formatı hatalı")
+    # Dosya formatına göre oku
+    try:
+        if sample_submission_path.endswith('.parquet'):
+            heartbeat("Parquet dosyası okunuyor...")
+            sample_df = pd.read_parquet(sample_submission_path)
+            log(f"✓ Parquet dosyası okundu: {len(sample_df)} satır")
+        else:
+            sample_df = pd.read_csv(sample_submission_path)
+            log(f"✓ CSV dosyası okundu: {len(sample_df)} satır")
+
+        # record_id'leri çıkar (unique)
+        if 'record_id' in sample_df.columns:
+            record_ids = sorted(sample_df['record_id'].unique().tolist())
+            log(f"✓ {len(record_ids)} adet record_id bulundu")
+            log(f"   İlk 5 record: {record_ids[:5]}")
+        else:
+            log("❌ 'record_id' kolonu bulunamadı!", "ERROR")
+            raise ValueError("Submission dosyası formatı hatalı")
+
+    except Exception as e:
+        log(f"❌ Dosya okuma hatası: {e}", "ERROR")
+        raise
+
 else:
-    log("❌ sample_submission.csv bulunamadı!", "ERROR")
+    log("❌ sample_submission dosyası bulunamadı!", "ERROR")
     log("Lütfen Kaggle yarışmasının input datasını notebook'a ekleyin:", "ERROR")
     log("  1. Notebook ayarlarından 'Add Data' seçin", "ERROR")
     log("  2. PhysioNet ECG yarışmasının datasını ekleyin", "ERROR")
-    raise FileNotFoundError("sample_submission.csv bulunamadı")
+    raise FileNotFoundError("sample_submission dosyası bulunamadı")
 
 # Test görsellerini record_id'lere göre eşleştir
 if test_data_path:
