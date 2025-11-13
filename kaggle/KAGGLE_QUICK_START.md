@@ -78,8 +78,9 @@ Script çalışması için mutlaka gerekli:
 Add Data > Competition > PhysioNet ECG Image Digitization
 ```
 Bu dataset şunları içermelidir:
-- `test_images/` dizini (tüm test görselleri)
-- `sample_submission.csv` (record_id listesi)
+- `test_images/` veya `test/` dizini (tüm test görselleri)
+- `sample_submission.csv` veya `sample_submission.parquet` (record_id listesi)
+- Alternatif: `test.csv` (record_id'ler için fallback)
 
 ### 2. Eğitilmiş Model (opsiyonel)
 Eğer modelinizi eğittiyseniz:
@@ -108,9 +109,14 @@ Script çalıştığında şu dosyalar oluşturulur:
 
 ### Test Verileri (ZORUNLU)
 Script artık **gerçek test verileri** ile çalışır:
-- ✅ sample_submission.csv'den record_id'leri okur
+- ✅ sample_submission dosyasından record_id'leri okur (CSV veya Parquet)
 - ✅ Her record_id için tahmin yapar
 - ⚠️ Görseli olmayan kayıtlar için sıfır değerli signal kullanır
+
+### Desteklenen Dosya Formatları
+- ✅ CSV: `sample_submission.csv`, `test.csv`
+- ✅ Parquet: `sample_submission.parquet`
+- ✅ Otomatik format tespiti
 
 ### Dummy Model Modu
 Eğer eğitilmiş model yoksa script **DUMMY MODE**'da çalışır:
@@ -151,10 +157,13 @@ Script artık bunu otomatik çözüyor. Manuel çözüm:
 # veya CPU modunda çalıştırın
 ```
 
-### "sample_submission.csv bulunamadı" hatası
+### "sample_submission dosyası bulunamadı" hatası
 - Yarışmanın input datasını notebook'a ekleyin
 - Add Data > Competition > PhysioNet ECG Image Digitization
-- sample_submission.csv dosyası input dizininde olmalı
+- Şu dosyalardan biri olmalı:
+  - `sample_submission.csv`
+  - `sample_submission.parquet`
+  - `test.csv` (fallback olarak)
 
 ### "Test görselleri bulunamadı" hatası
 - test_images/ dizininin input'ta olduğundan emin olun
