@@ -1,790 +1,409 @@
-"""
-PhysioNet ECG Image Digitization - Kaggle Inference Script (Timeout Optimized)
-===============================================================================
-
-Kaggle timeout sorununu çözmek için optimize edilmiş versiyon.
-Her adımda çıktı vererek session'ın kapanmasını engeller.
-
-Author: PhysioNet Challenge Team
-Version: 2.0 (Timeout-Safe)
-"""
-
-import os
-import sys
-from pathlib import Path
-import subprocess
-import time as time_module
-from datetime import datetime
-
-# Başlangıç zamanı
-START_TIME = time_module.time()
-
-def log(message, level="INFO"):
-    """Zaman damgalı log mesajı (timeout'u engellemek için)"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] {level}: {message}", flush=True)
-
-def heartbeat(message="Still working..."):
-    """Heartbeat mesajı - Kaggle timeout'unu engeller"""
-    print(f"💓 {message}", flush=True)
-
-print("=" * 80)
-print("PhysioNet ECG Image Digitization - Kaggle Inference Pipeline v2.0")
-print("=" * 80)
-print()
-
-# ============================================================================
-# STEP 1: Setup ve Kurulum
-# ============================================================================
-log("STEP 1: Projeyi GitHub'dan klonlama ve kurulum", "START")
-print("-" * 80)
-
-# Eski/bozuk dizinleri temizle (cache problemi için)
-project_dir = '/kaggle/working/PhysioNet-ECG-Image-Digitization-Challenge-2024'
-if os.path.exists(project_dir):
-    log("Eski proje dizini tespit edildi, temizleniyor...")
-    import shutil
-    try:
-        shutil.rmtree(project_dir)
-        log("✓ Eski dizin temizlendi")
-    except Exception as e:
-        log(f"⚠️ Temizleme uyarısı: {e}", "WARNING")
-
-# GitHub'dan fresh clone
-log("GitHub'dan klonlanıyor...")
-result = subprocess.run([
-    'git', 'clone',
-    'https://github.com/EmreUludasdemir/PhysioNet-ECG-Image-Digitization-Challenge-2024.git'
-], cwd='/kaggle/working', capture_output=True, text=True)
-
-if result.returncode != 0:
-    log(f"❌ Clone hatası: {result.stderr}", "ERROR")
-    sys.exit(1)
-
-log("✓ Klonlama tamamlandı")
-
-# Proje dizinine geç
-os.chdir(project_dir)
-log(f"✓ Çalışma dizini: {os.getcwd()}")
-
-# Branch'i checkout et
-log("Branch kontrol ediliyor...")
-subprocess.run(['git', 'checkout', 'claude/physionet-ecg-digitization-011CUq26jaEWm593owfiQqvq'],
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-log("✓ Branch: claude/physionet-ecg-digitization-011CUq26jaEWm593owfiQqvq")
-
-# Gerekli paketleri yükle
-log("Gerekli paketler yükleniyor...")
-packages = [
-    'segmentation-models-pytorch',
-    'timm',
-    'albumentations',
-    'opencv-python-headless',
-    'scikit-image',
-    'scipy',
-    'pandas',
-    'tqdm'
-]
-
-for i, package in enumerate(packages, 1):
-    heartbeat(f"Yükleniyor ({i}/{len(packages)}): {package}")
-    subprocess.run(['pip', 'install', '-q', package],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    log(f"✓ {package}")
-
-log("✅ Kurulum tamamlandı!", "SUCCESS")
-print()
-
-# NumPy 2.x uyumluluk sorunu için downgrade
-log("NumPy versiyonu kontrol ediliyor...")
-heartbeat("NumPy 1.x'e downgrade yapılıyor (matplotlib uyumluluğu için)...")
-subprocess.run(
-    ['pip', 'install', 'numpy<2.0', '--force-reinstall', '-q'],
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL
-)
-log("✓ NumPy downgrade tamamlandı")
-print()
-
-
-# ============================================================================
-# STEP 2: Import'lar ve Konfigürasyon
-# ============================================================================
-log("STEP 2: Modülleri yükleme", "START")
-print("-" * 80)
-
-# Path ekle
-sys.path.insert(0, '/kaggle/working/PhysioNet-ECG-Image-Digitization-Challenge-2024')
-
-# Import'lar
-heartbeat("Numpy ve temel kütüphaneler yükleniyor...")
-import numpy as np
-import pandas as pd
-heartbeat("Matplotlib yükleniyor...")
-import matplotlib
-matplotlib.use('Agg')  # GUI olmadan çalış
-import matplotlib.pyplot as plt
-heartbeat("CV2 ve görüntü işleme kütüphaneleri yükleniyor...")
-import cv2
-import warnings
-warnings.filterwarnings('ignore')
-heartbeat("PyTorch yükleniyor...")
-import torch
-heartbeat("Tqdm yükleniyor...")
-from tqdm import tqdm
-
-log("✓ Temel kütüphaneler yüklendi")
-
-# Proje modülleri
-try:
-    heartbeat("Proje modülleri yükleniyor...")
-    from src.config import get_config
-    from src.inference import ECGInferencePipeline
-    from src.data_preprocessing import ECGImagePreprocessor
-    from src.evaluation import ECGEvaluator
-    from src.segmentation_model import create_model
-    from src.vectorization import ECGVectorizer
-    log("✅ Tüm modüller başarıyla yüklendi!", "SUCCESS")
-except ImportError as e:
-    log(f"❌ Modül yükleme hatası: {e}", "ERROR")
-    sys.exit(1)
-
-# Device kontrolü
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-log(f"🔧 Device: {device.upper()}")
-if device == 'cuda':
-    log(f"   GPU: {torch.cuda.get_device_name(0)}")
-    log(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-
-# Config yükle
-config = get_config()
-log("✓ Konfigürasyon yüklendi")
-print()
-
-
-# ============================================================================
-# STEP 3: Test Verisi ve Sample Submission Kontrolü
-# ============================================================================
-log("STEP 3: Test verisi ve sample_submission.csv kontrol", "START")
-print("-" * 80)
-
-# Olası input lokasyonları (yarışmanın farklı isimleri için)
-possible_input_dirs = [
-    '/kaggle/input/physionet-ecg-image-digitization',
-    '/kaggle/input/physionet-ecg-digitization-challenge-2024',
-    '/kaggle/input/physionet-challenge-2024',
-    '/kaggle/input',
-]
-
-# Sample submission dosyasını bul
-sample_submission_path = None
-test_data_path = None
-competition_input_dir = None
-
-for input_dir in possible_input_dirs:
-    heartbeat(f"Kontrol ediliyor: {input_dir}")
-    if os.path.exists(input_dir):
-        # sample_submission dosyasını ara (csv veya parquet)
-        possible_submission_files = [
-            os.path.join(input_dir, 'sample_submission.csv'),
-            os.path.join(input_dir, 'sample_submission.parquet'),
-            os.path.join(input_dir, 'sampleSubmission.csv'),
-            os.path.join(input_dir, 'sampleSubmission.parquet'),
-            os.path.join(input_dir, 'SampleSubmission.csv'),
-        ]
-
-        for sub_file in possible_submission_files:
-            if os.path.exists(sub_file):
-                sample_submission_path = sub_file
-                competition_input_dir = input_dir
-                log(f"✓ Submission dosyası bulundu: {sub_file}")
-                break
-
-        # test_images dizini ara
-        possible_test_dirs = [
-            os.path.join(input_dir, 'test_images'),
-            os.path.join(input_dir, 'test'),
-            os.path.join(input_dir, 'images'),
-        ]
-
-        for test_dir in possible_test_dirs:
-            if os.path.exists(test_dir):
-                test_data_path = test_dir
-                log(f"✓ Test görselleri dizini bulundu: {test_dir}")
-                break
-
-        # test.csv dosyasını da kontrol et (fallback için)
-        test_csv_path = os.path.join(input_dir, 'test.csv')
-        if os.path.exists(test_csv_path):
-            if not sample_submission_path:
-                sample_submission_path = test_csv_path
-                competition_input_dir = input_dir
-                log(f"✓ test.csv bulundu (fallback olarak kullanılacak): {test_csv_path}")
-
-        if sample_submission_path and test_data_path:
-            break
-
-# sample_submission dosyasını oku ve gerçek record_id'leri al
-record_ids = []
-if sample_submission_path:
-    heartbeat("Submission dosyası okunuyor...")
-    import pandas as pd
-
-    # Dosya formatına göre oku
-    try:
-        if sample_submission_path.endswith('.parquet'):
-            heartbeat("Parquet dosyası okunuyor...")
-            sample_df = pd.read_parquet(sample_submission_path)
-            log(f"✓ Parquet dosyası okundu: {len(sample_df)} satır")
-        else:
-            sample_df = pd.read_csv(sample_submission_path)
-            log(f"✓ CSV dosyası okundu: {len(sample_df)} satır")
-
-        # record_id'leri çıkar (unique)
-        if 'record_id' in sample_df.columns:
-            # Standart format: record_id kolonu var
-            record_ids = sorted(sample_df['record_id'].unique().tolist())
-            log(f"✓ {len(record_ids)} adet record_id bulundu")
-            log(f"   İlk 5 record: {record_ids[:5]}")
-        elif 'id' in sample_df.columns:
-            # Alternatif format: id kolonu var (örn: "record_id_time_lead")
-            # id'den record_id'yi parse et (ilk underscore'a kadar)
-            heartbeat("id kolonundan record_id'ler parse ediliyor...")
-            sample_df['parsed_record_id'] = sample_df['id'].str.split('_').str[0]
-            record_ids = sorted(sample_df['parsed_record_id'].unique().tolist())
-            log(f"✓ {len(record_ids)} adet record_id parse edildi")
-            log(f"   İlk 5 record: {record_ids[:5]}")
-            log(f"   Örnek id format: {sample_df['id'].iloc[0]}")
-        else:
-            log("❌ 'record_id' veya 'id' kolonu bulunamadı!", "ERROR")
-            log(f"   Mevcut kolonlar: {sample_df.columns.tolist()}", "ERROR")
-            raise ValueError("Submission dosyası formatı hatalı")
-
-    except Exception as e:
-        log(f"❌ Dosya okuma hatası: {e}", "ERROR")
-        raise
-
-else:
-    log("❌ sample_submission dosyası bulunamadı!", "ERROR")
-    log("Lütfen Kaggle yarışmasının input datasını notebook'a ekleyin:", "ERROR")
-    log("  1. Notebook ayarlarından 'Add Data' seçin", "ERROR")
-    log("  2. PhysioNet ECG yarışmasının datasını ekleyin", "ERROR")
-    raise FileNotFoundError("sample_submission dosyası bulunamadı")
-
-# Test görsellerini record_id'lere göre eşleştir
-if test_data_path:
-    heartbeat("Test görselleri eşleştiriliyor...")
-    test_images_dict = {}
-
-    # Tüm görselleri tara
-    all_images = (
-        list(Path(test_data_path).glob('*.png')) +
-        list(Path(test_data_path).glob('*.jpg')) +
-        list(Path(test_data_path).glob('*.jpeg')) +
-        list(Path(test_data_path).glob('*.PNG')) +
-        list(Path(test_data_path).glob('*.JPG'))
-    )
-
-    # record_id'lere göre eşleştir
-    for img_path in all_images:
-        record_id = img_path.stem  # dosya adından uzantıyı çıkar
-        if record_id in record_ids:
-            test_images_dict[record_id] = img_path
-
-    log(f"✓ {len(test_images_dict)}/{len(record_ids)} görsel eşleştirildi")
-
-    if len(test_images_dict) == 0:
-        log("❌ Hiçbir test görseli bulunamadı!", "ERROR")
-        raise FileNotFoundError("Test görselleri bulunamadı")
-
-    USE_DUMMY_DATA = False
-else:
-    log("❌ Test görselleri dizini bulunamadı!", "ERROR")
-    raise FileNotFoundError("Test görselleri dizini bulunamadı")
-
-# İlk görseli görselleştir
-if len(test_images_dict) > 0:
-    heartbeat("Örnek görsel yükleniyor...")
-    first_record_id = list(test_images_dict.keys())[0]
-    first_image_path = test_images_dict[first_record_id]
-
-    sample_img = cv2.imread(str(first_image_path))
-    sample_img = cv2.cvtColor(sample_img, cv2.COLOR_BGR2RGB)
-
-    heartbeat("Görsel kaydediliyor...")
-    plt.figure(figsize=(15, 10))
-    plt.imshow(sample_img)
-    plt.title(f"Örnek ECG Görüntüsü: {first_image_path.name} (Record: {first_record_id})", fontsize=14, fontweight='bold')
-    plt.axis('off')
-    plt.tight_layout()
-    plt.savefig('/kaggle/working/sample_ecg_image.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    log("✓ Görsel kaydedildi: sample_ecg_image.png")
-
-print()
-
-
-# ============================================================================
-# STEP 4: Model Yükleme veya Dummy Model Oluşturma
-# ============================================================================
-log("STEP 4: Model yükleme", "START")
-print("-" * 80)
-
-# Model path'leri
-possible_model_paths = [
-    '/kaggle/input/ecg-model-weights/fold_0_best.pth',
-    '/kaggle/input/ecg-model/best_model.pth',
-    '/kaggle/input/physionet-model/fold_0_best.pth',
-]
-
-model_path = None
-for path in possible_model_paths:
-    heartbeat(f"Model kontrol ediliyor: {path}")
-    if os.path.exists(path):
-        model_path = path
-        log(f"✓ Model bulundu: {path}")
-        break
-
-if model_path is None:
-    log("⚠️ Eğitilmiş model bulunamadı! DUMMY MODEL MODU", "WARNING")
-    log("Not: Bu mod sadece test içindir. Gerçek sonuçlar için eğitilmiş model gerekir!")
-
-    USE_REAL_MODEL = False
-
-    # Dummy prediction fonksiyonu
-    preprocessor = ECGImagePreprocessor()
-    vectorizer = ECGVectorizer()
-
-    def predict_image(image_path):
-        """Dummy prediction - eğitilmiş model olmadan"""
-        heartbeat(f"İşleniyor: {Path(image_path).name}")
-
-        # Preprocessing yap
-        preprocessed = preprocessor.preprocess(image_path, apply_normalization=False)
-
-        # Random signal üret
-        num_leads = 12
-        signal_length = 5000
-
-        # Biraz daha gerçekçi görünmesi için sinüzoidal bileşenler
-        t = np.linspace(0, 10, signal_length)
-        dummy_signals = np.zeros((num_leads, signal_length))
-
-        for i in range(num_leads):
-            freq1 = 1.0 + i * 0.1
-            freq2 = 10.0 + i * 0.5
-            dummy_signals[i] = (
-                0.8 * np.sin(2 * np.pi * freq1 * t) +
-                0.2 * np.sin(2 * np.pi * freq2 * t) +
-                0.1 * np.random.randn(signal_length)
-            )
-
-        return dummy_signals
-
-else:
-    log("✓ Gerçek model kullanılıyor")
-    USE_REAL_MODEL = True
-
-    try:
-        heartbeat("Model yükleniyor (bu biraz zaman alabilir)...")
-        # Pipeline oluştur
-        pipeline = ECGInferencePipeline(
-            model_path=model_path,
-            config=config,
-            device=device
-        )
-        log("✅ Model başarıyla yüklendi!", "SUCCESS")
-
-        def predict_image(image_path):
-            """Gerçek model ile prediction"""
-            heartbeat(f"Predicting: {Path(image_path).name}")
-            return pipeline.predict(
-                image_path,
-                correct_rotation=True,
-                threshold=0.5,
-                return_dict=False
-            )
-
-    except Exception as e:
-        log(f"❌ Model yükleme hatası: {e}", "ERROR")
-        log("Dummy mode'a geçiliyor...", "WARNING")
-        USE_REAL_MODEL = False
-
-        preprocessor = ECGImagePreprocessor()
-
-        def predict_image(image_path):
-            heartbeat(f"Processing (dummy): {Path(image_path).name}")
-            preprocessed = preprocessor.preprocess(image_path, apply_normalization=False)
-            return np.random.randn(12, 5000) * 0.5
-
-print()
-
-
-# ============================================================================
-# STEP 5: Test Prediction (Hızlı Kontrol)
-# ============================================================================
-log("STEP 5: Test prediction", "START")
-print("-" * 80)
-
-heartbeat("İlk görsel üzerinde test prediction yapılıyor...")
-
-try:
-    first_record_id = list(test_images_dict.keys())[0]
-    first_image_path = test_images_dict[first_record_id]
-
-    test_signal = predict_image(first_image_path)
-    log(f"✓ Prediction tamamlandı (Record: {first_record_id})")
-    log(f"  Shape: {test_signal.shape}")
-    log(f"  Range: [{test_signal.min():.3f}, {test_signal.max():.3f}] mV")
-    log(f"  Mean: {test_signal.mean():.3f} mV")
-
-    # Görselleştir
-    heartbeat("Sinyal görselleştiriliyor...")
-    fig, axes = plt.subplots(4, 3, figsize=(20, 15))
-    axes = axes.flatten()
-
-    lead_names = config.data.lead_names
-    time = np.arange(1000) / 500
-
-    for i, lead_name in enumerate(lead_names):
-        ax = axes[i]
-        ax.plot(time, test_signal[i, :1000], 'b-', linewidth=0.8)
-        ax.set_title(f'Lead {lead_name}', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Amplitude (mV)')
-        ax.grid(True, alpha=0.3)
-
-    plt.suptitle(f'Test Prediction - {first_record_id} (İlk 2 saniye)', fontsize=16, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig('/kaggle/working/test_prediction.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    log("✓ Görsel kaydedildi: test_prediction.png")
-
-except Exception as e:
-    log(f"❌ Test prediction hatası: {e}", "ERROR")
-
-print()
-
-
-# ============================================================================
-# STEP 6: Batch Prediction - Timeout-Safe Version
-# ============================================================================
-log("STEP 6: Batch prediction (Timeout-Safe)", "START")
-print("-" * 80)
-
-predictions = {}
-
-log(f"Toplam {len(record_ids)} record işlenecek")
-log(f"  • Görseli bulunan: {len(test_images_dict)}")
-log(f"  • Görseli bulunamayan: {len(record_ids) - len(test_images_dict)}")
-
-# Batch boyutu (her N görselde bir checkpoint)
-CHECKPOINT_INTERVAL = 10
-HEARTBEAT_INTERVAL = 5
-
-success_count = 0
-error_count = 0
-missing_count = 0
-
-# Progress bar ile işle - TÜM record_id'ler için
-pbar = tqdm(record_ids, desc="Processing records", unit="record")
-
-for idx, record_id in enumerate(pbar, 1):
-    try:
-        # Heartbeat her N kayıtta
-        if idx % HEARTBEAT_INTERVAL == 0:
-            heartbeat(f"İşlenen: {idx}/{len(record_ids)} ({success_count} başarılı, {missing_count} eksik, {error_count} hatalı)")
-
-        # Eğer görsel varsa, gerçek prediction yap
-        if record_id in test_images_dict:
-            image_path = test_images_dict[record_id]
-            signals = predict_image(image_path)
-            predictions[record_id] = signals
-            success_count += 1
-        else:
-            # Görsel yoksa, sıfır değerli signal oluştur (uyarı ver)
-            if missing_count == 0:
-                log(f"⚠️ Görseli bulunamayan kayıtlar için sıfır değerli signal oluşturuluyor", "WARNING")
-            signals = np.zeros((12, 5000))
-            predictions[record_id] = signals
-            missing_count += 1
-
-        # Progress bar güncelle
-        pbar.set_postfix({'success': success_count, 'missing': missing_count, 'errors': error_count})
-
-        # Checkpoint kaydet
-        if idx % CHECKPOINT_INTERVAL == 0:
-            log(f"💾 Checkpoint: {idx}/{len(record_ids)} işlendi")
-            # İsteğe bağlı: ara sonuçları kaydet
-            checkpoint_file = f'/kaggle/working/checkpoint_{idx}.txt'
-            with open(checkpoint_file, 'w') as f:
-                f.write(f"Processed: {idx}\nSuccess: {success_count}\nMissing: {missing_count}\nErrors: {error_count}")
-
-    except Exception as e:
-        error_count += 1
-        if error_count <= 5:
-            log(f"❌ Hata (record: {record_id}): {e}", "ERROR")
-        # Hata durumunda da sıfır değerli signal ekle
-        predictions[record_id] = np.zeros((12, 5000))
-        pbar.set_postfix({'success': success_count, 'missing': missing_count, 'errors': error_count})
-
-pbar.close()
-
-log(f"✅ Batch processing tamamlandı!", "SUCCESS")
-log(f"   Başarılı: {success_count}/{len(record_ids)}")
-if missing_count > 0:
-    log(f"   Görseli yok: {missing_count}/{len(record_ids)}", "WARNING")
-if error_count > 0:
-    log(f"   Hatalı: {error_count}/{len(record_ids)}", "WARNING")
-
-# İstatistikler
-if len(predictions) > 0:
-    heartbeat("İstatistikler hesaplanıyor...")
-    all_signals = np.stack(list(predictions.values()))
-    log(f"\n📊 Prediction İstatistikleri:")
-    log(f"   Shape: {all_signals.shape}")
-    log(f"   Min: {all_signals.min():.3f} mV")
-    log(f"   Max: {all_signals.max():.3f} mV")
-    log(f"   Mean: {all_signals.mean():.3f} mV")
-    log(f"   Std: {all_signals.std():.3f} mV")
-
-print()
-
-
-# ============================================================================
-# STEP 7: Submission File Oluştur
-# ============================================================================
-log("STEP 7: Kaggle submission dosyası oluşturma", "START")
-print("-" * 80)
-
-lead_names = config.data.lead_names
-
-heartbeat("Submission formatı hazırlanıyor...")
-rows = []
-
-# Progress bar ile submission oluştur
-# Format: id = "{record_id}_{time_idx}_{lead_name}", value = signal_value
-total_rows = len(predictions) * len(lead_names) * 5000
-log(f"Toplam {total_rows:,} satır oluşturulacak")
-log(f"Format: id = {{record_id}}_{{time}}_{{lead}}, value = signal_value")
-
-row_count = 0
-for record_id, signals in predictions.items():
-    heartbeat(f"Submission oluşturuluyor: {record_id}")
-
-    for lead_idx, lead_name in enumerate(lead_names):
-        for time_idx in range(signals.shape[1]):
-            # ID formatı: {record_id}_{time_idx}_{lead_name}
-            row_id = f"{record_id}_{time_idx}_{lead_name}"
-            rows.append({
-                'id': row_id,
-                'value': float(signals[lead_idx, time_idx])
-            })
-
-            row_count += 1
-            # Her 100k satırda heartbeat
-            if row_count % 100000 == 0:
-                heartbeat(f"Oluşturulan satır: {row_count:,}/{total_rows:,}")
-
-heartbeat("DataFrame oluşturuluyor...")
-submission_df = pd.DataFrame(rows)
-
-# Kaydet
-heartbeat("CSV dosyası kaydediliyor...")
-submission_path = '/kaggle/working/submission.csv'
-submission_df.to_csv(submission_path, index=False)
-
-log(f"✅ Submission dosyası oluşturuldu!", "SUCCESS")
-log(f"   Path: {submission_path}")
-log(f"   Toplam satır: {len(submission_df):,}")
-log(f"   Toplam record: {len(predictions)}")
-log(f"   Dosya boyutu: {os.path.getsize(submission_path) / (1024*1024):.2f} MB")
-
-# Önizleme
-log(f"\n📋 Submission Önizlemesi (ilk 20 satır):")
-print(submission_df.head(20).to_string())
-
-print()
-
-
-# ============================================================================
-# STEP 8: Submission Validation
-# ============================================================================
-log("STEP 8: Submission validation", "START")
-print("-" * 80)
-
-heartbeat("Submission dosyası kontrol ediliyor...")
-
-# Boyut kontrolü
-log(f"✓ Toplam satır: {len(submission_df):,}")
-log(f"✓ Kolonlar: {list(submission_df.columns)}")
-
-# Kolon kontrolü
-expected_columns = ['id', 'value']
-if list(submission_df.columns) == expected_columns:
-    log(f"✓ Kolonlar doğru: {expected_columns}")
-else:
-    log(f"⚠️ Kolon uyuşmazlığı! Beklenen: {expected_columns}, Mevcut: {list(submission_df.columns)}", "WARNING")
-
-# Eksik değer kontrolü
-missing = submission_df.isnull().sum().sum()
-if missing > 0:
-    log(f"⚠️ {missing} eksik değer bulundu!", "WARNING")
-else:
-    log(f"✓ Eksik değer yok")
-
-# ID formatı kontrolü (örnek kontrol)
-sample_id = submission_df['id'].iloc[0]
-if '_' in sample_id:
-    log(f"✓ ID formatı doğru (örnek: {sample_id})")
-else:
-    log(f"⚠️ ID formatı hatalı (örnek: {sample_id})", "WARNING")
-
-# Record sayısı (id'lerden parse et)
-unique_records = submission_df['id'].str.split('_').str[0].nunique()
-log(f"✓ Unique record sayısı: {unique_records}")
-
-# Değer aralığı kontrolü
-val_min = submission_df['value'].min()
-val_max = submission_df['value'].max()
-val_mean = submission_df['value'].mean()
-log(f"✓ Değer aralığı: [{val_min:.3f}, {val_max:.3f}] mV")
-log(f"✓ Ortalama değer: {val_mean:.3f} mV")
-
-# Dosya boyutu
-file_size_mb = os.path.getsize(submission_path) / (1024 * 1024)
-log(f"✓ Dosya boyutu: {file_size_mb:.2f} MB")
-
-# NaN/Inf kontrolü
-has_inf = np.isinf(submission_df['value']).any()
-if has_inf:
-    log("⚠️ Infinity değerleri tespit edildi!", "WARNING")
-else:
-    log("✓ Infinity değeri yok")
-
-print("\n" + "=" * 80)
-
-if missing == 0 and list(submission_df.columns) == expected_columns and not has_inf:
-    log("✅✅✅ SUBMISSION HAZIR! SUBMIT EDEBİLİRSİNİZ! ✅✅✅", "SUCCESS")
-else:
-    log("⚠️ Submission'da bazı sorunlar var, lütfen kontrol edin", "WARNING")
-
-print("=" * 80)
-print()
-
-
-# ============================================================================
-# STEP 9: Görselleştirme
-# ============================================================================
-log("STEP 9: Sonuç görselleştirme", "START")
-print("-" * 80)
-
-if len(predictions) > 0:
-    # Rastgele bir record seç
-    import random
-    random_record = random.choice(list(predictions.keys()))
-    signals = predictions[random_record]
-
-    heartbeat(f"Görselleştirilen record: {random_record}")
-
-    # Tüm 12 lead'i görselleştir
-    fig, axes = plt.subplots(4, 3, figsize=(20, 15))
-    axes = axes.flatten()
-
-    for i, lead_name in enumerate(lead_names):
-        heartbeat(f"Lead {lead_name} çiziliyor...")
-        ax = axes[i]
-
-        # Tüm sinyali çiz
-        time = np.arange(signals.shape[1]) / 500
-        ax.plot(time, signals[i], 'b-', linewidth=0.5)
-
-        ax.set_title(f'Lead {lead_name}', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Time (s)', fontsize=10)
-        ax.set_ylabel('Amplitude (mV)', fontsize=10)
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim([0, 10])
-
-        # İstatistikler
-        stats_text = f'Min: {signals[i].min():.2f}\nMax: {signals[i].max():.2f}\nMean: {signals[i].mean():.2f}'
-        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-                fontsize=8, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
-    plt.suptitle(f'12-Lead ECG Signal - Record: {random_record}',
-                 fontsize=18, fontweight='bold', y=0.995)
-    plt.tight_layout()
-
-    heartbeat("Görsel kaydediliyor...")
-    plt.savefig('/kaggle/working/ecg_visualization.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    log("✓ Görsel kaydedildi: ecg_visualization.png")
-
-    # Per-lead istatistikler
-    log("\n📊 Lead İstatistikleri:")
-    print("-" * 80)
-    print(f"{'Lead':<6} {'Min':>10} {'Max':>10} {'Mean':>10} {'Std':>10}")
-    print("-" * 80)
-    for i, lead_name in enumerate(lead_names):
-        print(f"{lead_name:<6} {signals[i].min():>10.3f} {signals[i].max():>10.3f} "
-              f"{signals[i].mean():>10.3f} {signals[i].std():>10.3f}")
-
-print()
-
-
-# ============================================================================
-# ÖZET VE SONUÇ
-# ============================================================================
-log("=" * 80)
-log("🎉 PIPELINE TAMAMLANDI!", "SUCCESS")
-log("=" * 80)
-
-log(f"\n📊 ÖZET:")
-log(f"   • Toplam record sayısı: {len(record_ids)}")
-log(f"   • Gerçek görsellerden tahmin: {success_count}")
-if missing_count > 0:
-    log(f"   • ⚠️ Görseli olmayan (sıfır değer): {missing_count}")
-if error_count > 0:
-    log(f"   • ⚠️ Hatalı (sıfır değer): {error_count}")
-log(f"   • Submission satır sayısı: {len(submission_df):,}")
-log(f"   • Model tipi: {'GERÇEK MODEL' if USE_REAL_MODEL else 'DUMMY MODEL (Test)'}")
-log(f"   • Submission dosyası: {submission_path}")
-log(f"   • Dosya boyutu: {file_size_mb:.2f} MB")
-
-log(f"\n📁 OLUŞTURULAN DOSYALAR:")
-output_files = [
-    '/kaggle/working/submission.csv',
-    '/kaggle/working/ecg_visualization.png',
-    '/kaggle/working/test_prediction.png',
-    '/kaggle/working/sample_ecg_image.png',
-]
-
-for file_path in output_files:
-    if os.path.exists(file_path):
-        size = os.path.getsize(file_path) / 1024
-        log(f"   ✓ {file_path} ({size:.1f} KB)")
-
-log(f"\n🚀 SONRAKI ADIMLAR:")
-if not USE_REAL_MODEL:
-    log("   1. ⚠️ DUMMY MODEL KULLANILDI! Gerçek sonuçlar için:")
-    log("      - Model eğitin: scripts/train.py")
-    log("      - Eğitilmiş modeli Kaggle'a dataset olarak yükleyin")
-    log("      - Bu scripti tekrar çalıştırın")
-    log("")
-
-if missing_count > 0:
-    log("   ⚠️ UYARI: Bazı kayıtların görselleri bulunamadı!")
-    log("      - Bu kayıtlar için sıfır değerli signal kullanıldı")
-    log("      - Gerçek yarışmada tüm görsellerin olduğundan emin olun")
-    log("")
-
-log("   • submission.csv dosyasını indirin")
-log("   • Kaggle Competition sayfasına gidin")
-log("   • 'Submit Predictions' butonuna tıklayın")
-log("   • submission.csv dosyasını yükleyin")
-log("   • Sonuçları bekleyin!")
-
-log("\n" + "=" * 80)
-log("✅ Script başarıyla tamamlandı!", "SUCCESS")
-log(f"⏱️ Toplam süre: {time_module.time() - START_TIME:.2f} saniye")
-log("=" * 80)
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "12bd2c84",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-11-17T14:50:05.235080Z",
+     "iopub.status.busy": "2025-11-17T14:50:05.234743Z",
+     "iopub.status.idle": "2025-11-18T01:58:35.859415Z",
+     "shell.execute_reply": "2025-11-18T01:58:35.855026Z"
+    },
+    "papermill": {
+     "duration": 40110.632059,
+     "end_time": "2025-11-18T01:58:35.863474",
+     "exception": false,
+     "start_time": "2025-11-17T14:50:05.231415",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "--2025-11-17 14:50:05--  https://raw.githubusercontent.com/EmreUludasdemir/PhysioNet-ECG-Image-Digitization-Challenge-2024/claude/physionet-ecg-digitization-011CUq26jaEWm593owfiQqvq/kaggle/kaggle_training.py\r\n",
+      "Resolving raw.githubusercontent.com (raw.githubusercontent.com)... 185.199.108.133, 185.199.110.133, 185.199.109.133, ...\r\n",
+      "Connecting to raw.githubusercontent.com (raw.githubusercontent.com)|185.199.108.133|:443... connected.\r\n",
+      "HTTP request sent, awaiting response... 200 OK\r\n",
+      "Length: 14552 (14K) [text/plain]\r\n",
+      "Saving to: ‘kaggle_training.py’\r\n",
+      "\r\n",
+      "kaggle_training.py  100%[===================>]  14.21K  --.-KB/s    in 0.001s  \r\n",
+      "\r\n",
+      "2025-11-17 14:50:05 (22.8 MB/s) - ‘kaggle_training.py’ saved [14552/14552]\r\n",
+      "\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m363.4/363.4 MB\u001b[0m \u001b[31m3.0 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m13.8/13.8 MB\u001b[0m \u001b[31m81.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m24.6/24.6 MB\u001b[0m \u001b[31m60.0 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m883.7/883.7 kB\u001b[0m \u001b[31m32.8 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m664.8/664.8 MB\u001b[0m \u001b[31m2.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m211.5/211.5 MB\u001b[0m \u001b[31m7.2 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m56.3/56.3 MB\u001b[0m \u001b[31m17.9 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m127.9/127.9 MB\u001b[0m \u001b[31m12.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m207.5/207.5 MB\u001b[0m \u001b[31m5.3 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m21.1/21.1 MB\u001b[0m \u001b[31m3.9 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[?25h\u001b[31mERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.\r\n",
+      "libcugraph-cu12 25.6.0 requires libraft-cu12==25.6.*, but you have libraft-cu12 25.2.0 which is incompatible.\r\n",
+      "pylibcugraph-cu12 25.6.0 requires pylibraft-cu12==25.6.*, but you have pylibraft-cu12 25.2.0 which is incompatible.\r\n",
+      "pylibcugraph-cu12 25.6.0 requires rmm-cu12==25.6.*, but you have rmm-cu12 25.2.0 which is incompatible.\u001b[0m\u001b[31m\r\n",
+      "\u001b[0m/usr/local/lib/python3.11/dist-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.\r\n",
+      "  warnings.warn(\r\n",
+      "/usr/local/lib/python3.11/dist-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.\r\n",
+      "  warnings.warn(\r\n",
+      "================================================================================\r\n",
+      "PhysioNet ECG Image Digitization - Training\r\n",
+      "================================================================================\r\n",
+      "Device: cpu\r\n",
+      "Image size: (512, 512)\r\n",
+      "Batch size: 8\r\n",
+      "Learning rate: 0.0001\r\n",
+      "Epochs: 50\r\n",
+      "================================================================================\r\n",
+      "\r\n",
+      "📊 Loading data...\r\n",
+      "Total records: 977\r\n",
+      "Train records: 830\r\n",
+      "Validation records: 147\r\n",
+      "\r\n",
+      "🔧 Creating model...\r\n",
+      "model.safetensors: 100%|███████████████████| 36.8M/36.8M [00:01<00:00, 32.1MB/s]\r\n",
+      "Model created with encoder: efficientnet_b2\r\n",
+      "Encoder output channels: 1408\r\n",
+      "Output shape: 12 × 5000\r\n",
+      "Total parameters: 264,799,330\r\n",
+      "Trainable parameters: 264,799,330\r\n",
+      "/usr/local/lib/python3.11/dist-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.\r\n",
+      "  warnings.warn(\r\n",
+      "\r\n",
+      "🚀 Starting training...\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 1/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [18:55<00:00, 10.92s/it, loss=0.0106]\r\n",
+      "Train Loss: 0.0308\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.22s/it, loss=0.0110, snr=-0.01 dB]\r\n",
+      "Val Loss: 0.0088 | Val SNR: -0.01 dB\r\n",
+      "✅ New best model saved! SNR: -0.01 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 2/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [21:52<00:00, 12.62s/it, loss=0.0097]\r\n",
+      "Train Loss: 0.0121\r\n",
+      "Validation: 100%|████| 19/19 [00:44<00:00,  2.33s/it, loss=0.0104, snr=-0.01 dB]\r\n",
+      "Val Loss: 0.0086 | Val SNR: -0.00 dB\r\n",
+      "✅ New best model saved! SNR: -0.00 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 3/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [21:06<00:00, 12.17s/it, loss=0.0005]\r\n",
+      "Train Loss: 0.0080\r\n",
+      "Validation: 100%|█████| 19/19 [00:46<00:00,  2.46s/it, loss=0.0019, snr=0.01 dB]\r\n",
+      "Val Loss: -0.0020 | Val SNR: 0.02 dB\r\n",
+      "✅ New best model saved! SNR: 0.02 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 4/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [21:06<00:00, 12.17s/it, loss=0.0737]\r\n",
+      "Train Loss: -0.0116\r\n",
+      "Validation: 100%|█████| 19/19 [00:43<00:00,  2.29s/it, loss=0.0051, snr=0.00 dB]\r\n",
+      "Val Loss: -0.0074 | Val SNR: 0.03 dB\r\n",
+      "✅ New best model saved! SNR: 0.03 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 5/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [20:58<00:00, 12.10s/it, loss=-0.1553]\r\n",
+      "Train Loss: -0.0253\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.24s/it, loss=-0.0020, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0379 | Val SNR: 0.09 dB\r\n",
+      "✅ New best model saved! SNR: 0.09 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 6/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:10<00:00, 12.22s/it, loss=-0.0085]\r\n",
+      "Train Loss: -0.0395\r\n",
+      "Validation: 100%|████| 19/19 [00:43<00:00,  2.27s/it, loss=0.0422, snr=-0.07 dB]\r\n",
+      "Val Loss: 0.0052 | Val SNR: 0.00 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 7/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [20:53<00:00, 12.05s/it, loss=0.0027]\r\n",
+      "Train Loss: -0.0522\r\n",
+      "Validation: 100%|████| 19/19 [00:44<00:00,  2.33s/it, loss=-0.0022, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0479 | Val SNR: 0.11 dB\r\n",
+      "✅ New best model saved! SNR: 0.11 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 8/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:05<00:00, 12.17s/it, loss=-0.1077]\r\n",
+      "Train Loss: -0.0643\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.24s/it, loss=-0.0049, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0526 | Val SNR: 0.12 dB\r\n",
+      "✅ New best model saved! SNR: 0.12 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 9/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:17<00:00, 12.28s/it, loss=-0.2321]\r\n",
+      "Train Loss: -0.0769\r\n",
+      "Validation: 100%|████| 19/19 [00:47<00:00,  2.48s/it, loss=-0.0008, snr=0.01 dB]\r\n",
+      "Val Loss: -0.0515 | Val SNR: 0.12 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 10/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:18<00:00, 12.30s/it, loss=-0.0417]\r\n",
+      "Train Loss: -0.0935\r\n",
+      "Validation: 100%|████| 19/19 [00:50<00:00,  2.65s/it, loss=0.0120, snr=-0.01 dB]\r\n",
+      "Val Loss: -0.0545 | Val SNR: 0.12 dB\r\n",
+      "✅ New best model saved! SNR: 0.12 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 11/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:36<00:00, 12.47s/it, loss=-0.0151]\r\n",
+      "Train Loss: -0.1023\r\n",
+      "Validation: 100%|████| 19/19 [00:45<00:00,  2.37s/it, loss=-0.0085, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0672 | Val SNR: 0.15 dB\r\n",
+      "✅ New best model saved! SNR: 0.15 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 12/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|██████████████████| 104/104 [21:51<00:00, 12.61s/it, loss=0.0260]\r\n",
+      "Train Loss: -0.1190\r\n",
+      "Validation: 100%|████| 19/19 [00:45<00:00,  2.39s/it, loss=-0.0122, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0727 | Val SNR: 0.16 dB\r\n",
+      "✅ New best model saved! SNR: 0.16 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 13/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:41<00:00, 12.52s/it, loss=-0.1127]\r\n",
+      "Train Loss: -0.1292\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.22s/it, loss=-0.0113, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0750 | Val SNR: 0.16 dB\r\n",
+      "✅ New best model saved! SNR: 0.16 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 14/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:29<00:00, 12.40s/it, loss=-0.1751]\r\n",
+      "Train Loss: -0.1354\r\n",
+      "Validation: 100%|████| 19/19 [00:52<00:00,  2.76s/it, loss=-0.0058, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0740 | Val SNR: 0.16 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 15/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:35<00:00, 12.46s/it, loss=-0.4055]\r\n",
+      "Train Loss: -0.1512\r\n",
+      "Validation: 100%|████| 19/19 [00:45<00:00,  2.42s/it, loss=-0.0087, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0738 | Val SNR: 0.16 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 16/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:49<00:00, 12.59s/it, loss=-0.0592]\r\n",
+      "Train Loss: -0.1573\r\n",
+      "Validation: 100%|█████| 19/19 [00:43<00:00,  2.30s/it, loss=0.0014, snr=0.01 dB]\r\n",
+      "Val Loss: -0.0798 | Val SNR: 0.17 dB\r\n",
+      "✅ New best model saved! SNR: 0.17 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 17/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:44<00:00, 12.55s/it, loss=-0.1976]\r\n",
+      "Train Loss: -0.1745\r\n",
+      "Validation: 100%|████| 19/19 [00:43<00:00,  2.30s/it, loss=-0.0141, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0869 | Val SNR: 0.19 dB\r\n",
+      "✅ New best model saved! SNR: 0.19 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 18/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:59<00:00, 12.69s/it, loss=-0.1332]\r\n",
+      "Train Loss: -0.1886\r\n",
+      "Validation: 100%|████| 19/19 [00:46<00:00,  2.43s/it, loss=-0.0053, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0865 | Val SNR: 0.19 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 19/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:25<00:00, 12.36s/it, loss=-0.2674]\r\n",
+      "Train Loss: -0.2045\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.24s/it, loss=-0.0114, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0932 | Val SNR: 0.20 dB\r\n",
+      "✅ New best model saved! SNR: 0.20 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 20/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:39<00:00, 12.50s/it, loss=-0.2139]\r\n",
+      "Train Loss: -0.2220\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.24s/it, loss=-0.0110, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0961 | Val SNR: 0.20 dB\r\n",
+      "✅ New best model saved! SNR: 0.20 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 21/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:57<00:00, 12.66s/it, loss=-0.0934]\r\n",
+      "Train Loss: -0.2363\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.22s/it, loss=-0.0049, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0884 | Val SNR: 0.19 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 22/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:36<00:00, 12.47s/it, loss=-0.0510]\r\n",
+      "Train Loss: -0.2499\r\n",
+      "Validation: 100%|████| 19/19 [00:46<00:00,  2.43s/it, loss=-0.0127, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0912 | Val SNR: 0.19 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 23/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:18<00:00, 12.30s/it, loss=-0.2722]\r\n",
+      "Train Loss: -0.2655\r\n",
+      "Validation: 100%|████| 19/19 [00:45<00:00,  2.38s/it, loss=-0.0125, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0893 | Val SNR: 0.19 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 24/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:12<00:00, 12.24s/it, loss=-0.7967]\r\n",
+      "Train Loss: -0.2821\r\n",
+      "Validation: 100%|████| 19/19 [00:42<00:00,  2.24s/it, loss=-0.0138, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0934 | Val SNR: 0.20 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 25/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:10<00:00, 12.22s/it, loss=-0.4705]\r\n",
+      "Train Loss: -0.3058\r\n",
+      "Validation: 100%|█████| 19/19 [00:43<00:00,  2.30s/it, loss=0.0043, snr=0.00 dB]\r\n",
+      "Val Loss: -0.0812 | Val SNR: 0.17 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 26/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:17<00:00, 12.28s/it, loss=-0.2363]\r\n",
+      "Train Loss: -0.3261\r\n",
+      "Validation: 100%|█████| 19/19 [00:44<00:00,  2.33s/it, loss=0.0001, snr=0.01 dB]\r\n",
+      "Val Loss: -0.0809 | Val SNR: 0.17 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 27/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:17<00:00, 12.28s/it, loss=-0.3571]\r\n",
+      "Train Loss: -0.3766\r\n",
+      "Validation: 100%|████| 19/19 [00:47<00:00,  2.48s/it, loss=-0.0142, snr=0.04 dB]\r\n",
+      "Val Loss: -0.0854 | Val SNR: 0.18 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 28/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:22<00:00, 12.33s/it, loss=-0.1710]\r\n",
+      "Train Loss: -0.4251\r\n",
+      "Validation: 100%|████| 19/19 [00:43<00:00,  2.28s/it, loss=-0.0056, snr=0.02 dB]\r\n",
+      "Val Loss: -0.0841 | Val SNR: 0.18 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 29/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:28<00:00, 12.39s/it, loss=-0.4842]\r\n",
+      "Train Loss: -0.4488\r\n",
+      "Validation: 100%|████| 19/19 [00:43<00:00,  2.30s/it, loss=-0.0110, snr=0.03 dB]\r\n",
+      "Val Loss: -0.0863 | Val SNR: 0.18 dB\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "Epoch 30/50\r\n",
+      "================================================================================\r\n",
+      "Training: 100%|█████████████████| 104/104 [21:36<00:00, 12.47s/it, loss=-0.5791]\r\n",
+      "Train Loss: -0.4773\r\n",
+      "Validation: 100%|█████| 19/19 [00:43<00:00,  2.28s/it, loss=0.0001, snr=0.01 dB]\r\n",
+      "Val Loss: -0.0790 | Val SNR: 0.17 dB\r\n",
+      "\r\n",
+      "⏸️  Early stopping triggered after 30 epochs\r\n",
+      "\r\n",
+      "================================================================================\r\n",
+      "✅ Training completed!\r\n",
+      "Best Val SNR: 0.20 dB\r\n",
+      "Best Val Loss: -0.0961\r\n",
+      "Model saved: /kaggle/working/best_model.pth\r\n",
+      "================================================================================\r\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 1. Script'i indir\n",
+    "!wget -O kaggle_training.py https://raw.githubusercontent.com/EmreUludasdemir/PhysioNet-ECG-Image-Digitization-Challenge-2024/claude/physionet-ecg-digitization-011CUq26jaEWm593owfiQqvq/kaggle/kaggle_training.py\n",
+    "\n",
+    "# 2. Kütüphaneleri yükle\n",
+    "!pip install -q timm\n",
+    "\n",
+    "# 3. Training'i başlat\n",
+    "!python kaggle_training.py"
+   ]
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "databundleVersionId": 14096757,
+     "sourceId": 97984,
+     "sourceType": "competition"
+    }
+   ],
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.13"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 40116.663108,
+   "end_time": "2025-11-18T01:58:36.939069",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2025-11-17T14:50:00.275961",
+   "version": "2.6.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
